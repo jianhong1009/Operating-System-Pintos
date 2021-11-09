@@ -209,6 +209,9 @@ thread_create(const char *name, int priority,
 
     /* Add to run queue. */
     thread_unblock(t);
+    if (priority > thread_current()->priority) {
+        thread_yield();
+    }
 
     return tid;
 }
@@ -244,7 +247,10 @@ thread_unblock(struct thread *t) {
 
     old_level = intr_disable();
     ASSERT(t->status == THREAD_BLOCKED);
-    list_push_back(&ready_list, &t->elem);
+
+    // list_push_back(&ready_list, &t->elem);
+    list_insert_ordered(&ready_list, &t->elem, (list_less_func * ) &cmp, NULL);
+
     t->status = THREAD_READY;
     intr_set_level(old_level);
 }
@@ -309,8 +315,11 @@ thread_yield(void) {
     ASSERT(!intr_context());
 
     old_level = intr_disable();
-    if (cur != idle_thread)
-        list_push_back(&ready_list, &cur->elem);
+    if (cur != idle_thread) {
+        // list_push_back(&ready_list, &cur->elem);
+        list_insert_ordered(&ready_list, &cur->elem, (list_less_func * ) & cmp, NULL);
+    }
+
     cur->status = THREAD_READY;
     schedule();
     intr_set_level(old_level);
@@ -344,7 +353,22 @@ thread_foreach(thread_action_func *func, void *aux) {
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void
 thread_set_priority(int new_priority) {
-    thread_current()->priority = new_priority;
+    if (thread_mlfqs) {
+        return;
+    }
+
+    enum intr_level old_level = intr_disable();
+
+    struct thread *t = thread_current();
+    int old_priority = t->priority;
+    t->original_priority = new_priority;
+
+    if (list_empty(&t->locks) || new_priority > old_priority) {
+        t->priority = new_priority;
+        thread_yield();
+    }
+
+    intr_set_level(old_level);
 }
 
 /* Returns the current thread's priority. */
@@ -459,7 +483,12 @@ init_thread(struct thread *t, const char *name, int priority) {
     t->stack = (uint8_t *) t + PGSIZE;
     t->priority = priority;
     t->magic = THREAD_MAGIC;
-    list_push_back(&all_list, &t->allelem);
+    // list_push_back(&all_list, &t->allelem);
+
+    t->original_priority = priority;
+    list_init(&t->locks);
+    t->waiting = NULL;
+    list_insert_ordered(&all_list, &t->allelem, (list_less_func * ) & cmp, NULL);
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and
@@ -571,3 +600,44 @@ allocate_tid(void) {
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof(
 struct thread, stack);
+
+void update_priority(struct thread *t) {
+    enum intr_level old_level = intr_disable();
+    int biggest_priority = t->original_priority;
+    int lock_priority;
+
+    if (!list_empty(&t->locks)) {
+        list_sort(&t->locks, (list_less_func * )&lock_cmp, NULL);
+        lock_priority = list_entry(list_front(&t->locks),
+        struct lock, elem)->biggest_priority;
+        if (lock_priority > biggest_priority) {
+            biggest_priority = lock_priority;
+        }
+    }
+
+    t->priority = biggest_priority;
+    intr_set_level(old_level);
+}
+
+void donate_priority(struct thread *t) {
+    enum intr_level old_level = intr_disable();
+    update_priority(t);
+
+    if (t->status == THREAD_READY) {
+        list_remove(&t->elem);
+        list_insert_ordered(&ready_list, &t->elem, (list_less_func * )&cmp, NULL);
+    }
+    intr_set_level(old_level);
+}
+
+bool cmp(struct list_elem *a, struct list_elem *b, void *aux UNUSED) {
+    return list_entry(a,
+    struct thread, elem)->priority > list_entry(b,
+    struct thread, elem)->priority;
+}
+
+bool lock_cmp(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
+    return list_entry(a,
+    struct lock, elem)->biggest_priority > list_entry(b,
+    struct lock, elem)->biggest_priority;
+}

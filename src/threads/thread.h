@@ -93,6 +93,10 @@ struct thread {
 
     int64_t sleeping_time_left; //记录剩下的睡眠时间，若不为0，表示线程处于睡眠sleep状态，暂停运行
 
+    int64_t original_priority; // 原本的优先级
+    struct list locks; // 线程获得的锁
+    struct lock *waiting; // 线程在等待的锁
+
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
@@ -153,5 +157,14 @@ int thread_get_recent_cpu(void);
 int thread_get_load_avg(void);
 
 void unsleep(struct thread *, void *);
+
+void update_priority(struct thread *);
+
+void donate_priority(struct thread *);
+
+bool cmp(struct list_elem *a, struct list_elem *b, void *aux);
+
+bool lock_cmp(const struct list_elem *a, const struct list_elem *b, void *aux);
+
 
 #endif /* threads/thread.h */
